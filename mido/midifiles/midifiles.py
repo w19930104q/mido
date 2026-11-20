@@ -62,6 +62,47 @@ class DebugFileWrapper:
         return self.file.tell()
 
 
+class ForwardOnlyFileWrapper:
+    """Adapt a forward-only stream (pipe, socket, ...) for MIDI parsing.
+
+    The parser only reads sequentially but uses ``tell()`` to find the
+    end of each track chunk. Streams that can not seek (and thus usually
+    can not report a position) are wrapped here. Bytes are counted as
+    they are read, so ``tell()`` works without ever seeking backwards.
+    """
+
+    def __init__(self, file):
+        self.file = file
+        self._pos = 0
+
+    def read(self, size=-1):
+        data = self.file.read(size)
+        self._pos += len(data)
+        return data
+
+    def tell(self):
+        return self._pos
+
+
+def _is_seekable(infile):
+    """Return whether ``infile`` supports seeking and position reporting."""
+    seekable = getattr(infile, 'seekable', None)
+    if seekable is not None:
+        try:
+            return seekable()
+        except (OSError, ValueError):
+            return False
+    # File-like objects without seekable() (e.g. older custom classes).
+    return hasattr(infile, 'seek') and hasattr(infile, 'tell')
+
+
+def _wrap_forward_only(infile):
+    """Wrap non-seekable streams so the sequential parser can read them."""
+    if _is_seekable(infile):
+        return infile
+    return ForwardOnlyFileWrapper(infile)
+
+
 def read_byte(self):
     byte = self.read(1)
     if byte == b'':
@@ -348,6 +389,10 @@ class MidiFile:
         return track
 
     def _load(self, infile):
+        # Sequential streams (pipes, sockets) can not seek or tell, so
+        # they are wrapped to count bytes read instead.
+        infile = _wrap_forward_only(infile)
+
         if self.debug:
             infile = DebugFileWrapper(infile)
 

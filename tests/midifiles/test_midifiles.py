@@ -30,6 +30,109 @@ def read_file(hexdump, clip=False):
     return MidiFile(file=io.BytesIO(parse_hexdump(hexdump)), clip=clip)
 
 
+class ForwardOnlyReader:
+    """Mimics a pipe or socket stream: sequential reads only, no seek/tell."""
+
+    def __init__(self, data):
+        self._buffer = io.BytesIO(data)
+
+    def read(self, size=-1):
+        return self._buffer.read(size)
+
+
+def _complex_midi_file():
+    """A MIDI file exercising meta, sysex and running status messages."""
+    mid = MidiFile(type=1, ticks_per_beat=480)
+
+    tempo_track = MidiTrack([
+        MetaMessage('track_name', name='Tempo Track', time=0),
+        MetaMessage('set_tempo', tempo=500000, time=0),
+        MetaMessage('time_signature', numerator=4, denominator=4, time=0),
+        MetaMessage('end_of_track', time=480),
+    ])
+    mid.tracks.append(tempo_track)
+
+    piano_track = MidiTrack([
+        MetaMessage('track_name', name='Piano', time=0),
+        Message('note_on', note=60, velocity=64, time=0),
+        # Same status byte as the previous message: running status.
+        Message('note_on', note=64, velocity=64, time=0),
+        Message('sysex', data=[1, 2, 3, 127], time=120),
+        Message('note_off', note=60, velocity=64, time=240),
+        Message('note_off', note=64, velocity=0, time=120),
+        MetaMessage('end_of_track', time=0),
+    ])
+    mid.tracks.append(piano_track)
+
+    return mid
+
+
+def test_forward_only_stream_matches_seekable_stream():
+    buffer = io.BytesIO()
+    _complex_midi_file().save(file=buffer)
+    data = buffer.getvalue()
+
+    seekable = MidiFile(file=io.BytesIO(data))
+    forward_only = MidiFile(file=ForwardOnlyReader(data))
+
+    assert forward_only.type == seekable.type
+    assert forward_only.ticks_per_beat == seekable.ticks_per_beat
+    assert forward_only.tracks == seekable.tracks
+
+
+def test_forward_only_stream_iteration_matches():
+    buffer = io.BytesIO()
+    _complex_midi_file().save(file=buffer)
+    data = buffer.getvalue()
+
+    seekable = MidiFile(file=io.BytesIO(data))
+    forward_only = MidiFile(file=ForwardOnlyReader(data))
+
+    assert list(forward_only) == list(seekable)
+    assert forward_only.length == seekable.length
+
+
+def test_forward_only_stream_debug_mode():
+    # DebugFileWrapper relies on tell(), which must keep working through
+    # the forward-only wrapper.
+    buffer = io.BytesIO()
+    _complex_midi_file().save(file=buffer)
+
+    MidiFile(file=ForwardOnlyReader(buffer.getvalue()), debug=True)
+
+
+def test_forward_only_stream_writeback_unchanged():
+    buffer = io.BytesIO()
+    _complex_midi_file().save(file=buffer)
+    original_bytes = buffer.getvalue()
+
+    forward_only = MidiFile(file=ForwardOnlyReader(original_bytes))
+    written = io.BytesIO()
+    forward_only.save(file=written)
+
+    assert written.getvalue() == original_bytes
+
+
+def test_non_seekable_stream_with_seekable_method():
+    class Stream(ForwardOnlyReader):
+        def seekable(self):
+            return False
+
+    buffer = io.BytesIO()
+    _complex_midi_file().save(file=buffer)
+    data = buffer.getvalue()
+
+    assert (MidiFile(file=Stream(data)).tracks
+            == MidiFile(file=io.BytesIO(data)).tracks)
+
+
+def test_seekable_stream_is_not_wrapped():
+    from mido.midifiles.midifiles import _wrap_forward_only
+
+    stream = io.BytesIO()
+    assert _wrap_forward_only(stream) is stream
+
+
 def test_no_tracks():
     assert read_file("""
     4d 54 68 64  # MThd

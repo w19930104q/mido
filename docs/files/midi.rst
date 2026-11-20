@@ -110,6 +110,9 @@ Similarly, the ``MidiFile`` constructor can take either a filename, or
 a file object by using the ``file`` keyword parameter. if you pass a file
 object to ``MidiFile`` as a context manager, the file is not closed when
 the context manager exits.
+The file object does not need to be seekable: forward-only streams such as
+pipes (``os.popen``) or binary socket streams (``socket.makefile``) are
+read sequentially and produce the same result as a seekable file.
 Examples can be found in ``test_midifiles2.py``.
 
 
